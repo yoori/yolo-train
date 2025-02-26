@@ -1,0 +1,33 @@
+[build-system]
+requires = [
+  'setuptools>=45.0',
+  'setuptools-scm'
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nx.ams"
+version = "0.0.1"
+authors = [
+  {name = "yuri", email = "ykuznecov@networkoptix.com"}
+]
+
+description = ""
+license = {text = 'Comercial'}
+requires-python = ">=3.9"
+
+dependencies = [
+  'asyncio',
+  'uuid',
+  'urllib3',
+  'opencv-python',
+  'argparse',
+  'jinja2',
+  'ultralytics==8.3.55',
+]
+
+[options]
+package_dir = "src"
+
+[project.scripts]
+nx_yolov11_train = "nx.utils.train.nx_yolov11_train:main"

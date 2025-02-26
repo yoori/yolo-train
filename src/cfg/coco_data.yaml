@@ -1,0 +1,17 @@
+# config for use nx dataset in yolo tool (tool from ultralytics package)
+path: /home/jurij_kuznecov/datasets/coco/ # dataset root dir
+train: train # train images (relative to 'path') 4 images
+val: val # val images (relative to 'path') 4 images
+test: # test images (optional)
+
+# Classes
+names:
+  0: person
+  1: bicycle
+  2: car
+  3: motorcycle
+  4: airplane
+  5: bus
+  6: train
+  7: truck
+  8: boat

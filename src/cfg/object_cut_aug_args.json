@@ -1,0 +1,22 @@
+{
+    "replace_background_2x2": 0,
+    "replace_background": 0,
+    "to_gray": 0,
+    "hsv": 0,
+    "bgr": 0,
+    "water": 0,
+    "jpeg": 0,
+    "color_twist": 0,
+    "gaussian_blur": 0,
+    "gaussian_noise": 0,
+    "salt_and_pepper": 0,
+    "grid_mask": 0,
+    "rotate": 0,
+    "paste": 0,
+    "hflip": 0,
+    "vflip": 0,
+    "mixup3": 0,
+    "mixup2": 0,
+    "object_mosaic": 0.5,
+    "object_overlay_mosaic": 0.5
+}
