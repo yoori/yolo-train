@@ -14,5 +14,9 @@
     "rotate": 0,
     "paste": 0,
     "hflip": 0,
-    "vflip": 0
+    "vflip": 0,
+    "mixup3": 0,
+    "mixup2": 0,
+    "object_mosaic": 0,
+    "object_overlay_mosaic": 0.5
 }

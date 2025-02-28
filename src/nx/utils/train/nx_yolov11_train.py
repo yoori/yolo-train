@@ -25,6 +25,7 @@ yolo train data=./nx.yaml model=./model.yaml pretrained=models/yolo11n_orig.pt e
 """
 
 import copy
+import typing
 import random
 import tempfile
 import shutil
@@ -42,6 +43,7 @@ import ultralytics
 import ultralytics.data.build
 
 import nx.dataset.base_dataset
+import nx.dataset.dataset_filter
 from nx.dataset.albumentation_dataset import AlbumentationDataset
 from nx.dataset.dali_kornia_dataset import DaliKorniaDataset
 
@@ -112,6 +114,27 @@ class NxCustomDataLoader(ultralytics.data.build.InfiniteDataLoader):
             return self.it.__next__()
     """
 
+    class DataLoaderWrapIterator(object):
+        def __init__(self, it, dataloader):
+            self._it = it
+            self._dataloader = dataloader
+
+        def __iter__(self):
+            #print("NxCustomDataLoader.DataLoaderWrapIterator.__iter__")
+            return self._it.__iter__()
+
+        def __next__(self) -> typing.Any:
+            label = self._it.__next__()
+            #print("NxCustomDataLoader.DataLoaderWrapIterator.__next__: " + str(label))
+            return label
+
+        def __len__(self) -> int:
+            #print("NxCustomDataLoader.DataLoaderWrapIterator.__len__")
+            return self._it.__len__()
+
+        def __getstate__(self):
+            return self._it.__getstate__()
+
     def __init__(
         self, dataset, batch_size=8, shuffle=True, transforms=None, rank=None, mode=None,
         num_workers: int = 12
@@ -127,6 +150,11 @@ class NxCustomDataLoader(ultralytics.data.build.InfiniteDataLoader):
             collate_fn=nx.dataset.base_dataset.collate_fn,
             generator=generator,
         )
+
+    def _get_iterator(self):
+        print("NxCustomDataLoader._get_iterator")
+        return NxCustomDataLoader.DataLoaderWrapIterator(super()._get_iterator(), self)
+
 
 class NxCustomTrainer(ultralytics.models.yolo.detect.train.DetectionTrainer):
     @dataclasses.dataclass
@@ -158,6 +186,7 @@ class NxCustomTrainer(ultralytics.models.yolo.detect.train.DetectionTrainer):
                 percent=1.0,
             )
         ] * 1000
+        self.dataset_filter = None
 
     def on_start_epoch_(self):
         epoch = self.epoch
@@ -192,9 +221,16 @@ class NxCustomTrainer(ultralytics.models.yolo.detect.train.DetectionTrainer):
             dataset = AlbumentationDataset(**dataset_args)
         else:
             dataset = ultralytics.YOLODataset(**dataset_args)
-        self.dataset = dataset
+
+        #k = dataset.__getstate__()
+        #self.dataset_filter = nx.dataset.dataset_filter.DatasetFilter(dataset)
+        #self.dataset = self.dataset_filter
+
+        self.dataset = nx.dataset.dataset_filter.DatasetFilter(dataset)
+        #self.dataset = dataset
+
         return NxCustomDataLoader(
-            dataset,
+            self.dataset,
             batch_size=batch_size,
             rank=rank,
             mode=mode,
@@ -431,7 +467,7 @@ names:
                 model_qconfig = getattr(model, "qconfig", None)
                 if model_qconfig is None:
                     model.training = True
-                    torch.quantization.prepare_qat(model, inplace=True)
+                    model = torch.quantization.prepare_qat(model, inplace=True)
 
                 results = model.train(
                     data=dataFile.name,

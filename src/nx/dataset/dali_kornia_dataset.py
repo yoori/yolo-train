@@ -334,6 +334,7 @@ def dali_load_and_augment_pipeline(
             device="mixed",
             output_type=dali.types.DALIImageType.BGR  # < By fact, output will be RGB
         )
+        mask_images = dali.fn.slice(mask_images, rel_start=cut_rel_start, rel_end=cut_rel_end)
 
         # Fill array of background image arrays with shuffled order.
         background_jpegs_arr = []
@@ -452,6 +453,7 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
     augment_args default:
     """
     _cut_segments_for_labels: typing.Dict
+    _corner_keypoints = None
 
     def __init__(self, *args, imgsz=640, augment=False, augment_args=None, **kwargs):
         self._imgsz = imgsz
@@ -467,6 +469,7 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
             full_mask_image[:] = (255, 255, 255)
             cv2.imwrite(self._full_mask_file, full_mask_image)
         self._cut_segments_for_labels = {}
+        self._corner_keypoints = [(0, 0), (1, 0), (1, 1), (0, 1)]
 
     def build_transforms(self, hyp=None):
         if self._augment:
@@ -604,7 +607,7 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
 
         # Fill keypoints and mask files.
         for label, segments in zip(labels, label_segments):
-            all_keypoints.append(DaliKorniaDataset.polygon_segments_to_keypoints(segments))
+            all_keypoints.append(self.polygon_segments_to_keypoints(segments))
             files.append(label['im_file'])
             if self._is_masks_and_backgrounds_required():
                 mask_files.append(
@@ -633,7 +636,7 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
         pipe.build()
 
         image_batch, label_batch, keypoints_batch = pipe.run()
-        pipe = None # < Free memory
+        pipe = None  # < Free memory
 
         dali_tensor = image_batch.as_tensor()
         image_batch = None
@@ -659,8 +662,12 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
         logger.debug("Getting items finished at " + str(get_items_sum_time) + "seconds")
 
         result = []
-        for image_tensor, file_index_tensor, item_keypoints in zip(
-            images_torch_tensor, labels_torch_tensor, keypoints
+        corner_points = []
+        for image_tensor, file_index_tensor, item_keypoints, segments in zip(
+            images_torch_tensor,
+            labels_torch_tensor,
+            keypoints,
+            label_segments  # < Decode keypoints with using segments used for fill it.
         ):
             image_shape = (image_tensor.shape[1], image_tensor.shape[2])  # < HW
             h, w = image_shape
@@ -668,7 +675,12 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
             label = labels[file_index]  # < Here we use copy of label.
 
             # Fill segments by keypoints.
-            segments = DaliKorniaDataset.keypoints_to_segments(item_keypoints, segments)
+            segments, local_corner_points = self.keypoints_to_segments(
+                item_keypoints,
+                segments,
+                label=label,
+            )
+            corner_points.append(local_corner_points)
 
             """
             __getitems__ should return (h=640, w=481):
@@ -685,23 +697,18 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
             label['ori_shape'] = image_shape
             label['shape'] = image_shape
             label['resized_shape'] = image_shape
-            # batch_idx should be batch index (index in requested items) repeated for each result object.
-            #label['batch_idx'] = torch.tensor([0] * len(result_classes), dtype=torch.float32)
-            #label['cls'] = torch.tensor(result_classes)
-            #label['bboxes'] = torch.tensor(result_bboxes)
             label['loaded_segments'] = segments
             label['ratio_pad'] = ((1.0, 1.0), (1, 1))
 
             result.append(label)
 
         # Apply mosaic augmentation for images selected for object cut.
-        for label, apply_object_mosaic, cut_region, image_keypoints in zip(
-                result, apply_object_mosaics, cut_regions, keypoints
+        for label, apply_object_mosaic, cut_region, corner_keypoints in zip(
+                result, apply_object_mosaics, cut_regions, corner_points
         ):
             if apply_object_mosaic != nx.dataset.mosaic_utils.ObjectMosaicMode.NONE:
                 # revert padding
                 _, height, width = label['img'].shape
-                corner_keypoints = image_keypoints[0:4]
                 x_left = min(c[0] for c in corner_keypoints)
                 x_right = max(c[0] for c in corner_keypoints)
                 y_top = min(c[1] for c in corner_keypoints)
@@ -753,11 +760,6 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
                         label_for_mix1['loaded_segments'] +
                         label_for_mix2['loaded_segments']
                     )
-                    #label['bboxes'] = torch.cat((label['bboxes'], label_for_mix1['bboxes'], label_for_mix2['bboxes']))
-                    #label['cls'] = torch.cat((label['cls'], label_for_mix1['cls'], label_for_mix2['cls']))
-                    label['batch_idx'] = torch.cat((
-                        label['batch_idx'], label_for_mix1['batch_idx'], label_for_mix2['batch_idx']
-                    ))
                 elif random.uniform(0, 1) < mixup2_probability:
                     label_for_mix = DaliKorniaDataset.select_random_label(result, label_i)
                     mix_coef = random.uniform(0.33, 0.66)
@@ -766,9 +768,6 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
                         label_for_mix['img'].to(torch.float32) * (1 - mix_coef)
                     ).to(torch.uint8)
                     label['loaded_segments'] = (label['loaded_segments'] + label_for_mix['loaded_segments'])
-                    #label['bboxes'] = torch.cat((label['bboxes'], label_for_mix['bboxes']))
-                    #label['cls'] = torch.cat((label['cls'], label_for_mix['cls']))
-                    label['batch_idx'] = torch.cat((label['batch_idx'], label_for_mix['batch_idx']))
 
         # Fill bboxes and cls by result segments.
         for label in result:
@@ -783,6 +782,7 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
             assert len(result_classes) == len(segments)
             label['cls'] = torch.tensor(result_classes)
             label['bboxes'] = torch.tensor(result_bboxes)
+            # batch_idx should be batch index (index in requested items) repeated for each result object.
             label['batch_idx'] = torch.tensor([0] * len(result_classes), dtype=torch.float32)
             assert len(label['cls']) == len(segments)
 
@@ -794,18 +794,18 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
         label_for_mix_i = label_for_mix_i if label_for_mix_i < exclude_index else label_for_mix_i + 1
         return labels[label_for_mix_i]
 
-    @staticmethod
-    def polygon_segments_to_keypoints(segments) -> typing.List[typing.Tuple[float, float]]:
-        keypoints = [(0, 0), (1, 0), (1, 1), (0, 1)]
+    def polygon_segments_to_keypoints(self, segments) -> typing.List[typing.Tuple[float, float]]:
+        keypoints = copy.deepcopy(self._corner_keypoints)
         for segment in segments:
             keypoints += [point for point in segment.polygon]
         return keypoints
 
-    @staticmethod
     def keypoints_to_segments(
+        self,
         keypoints: typing.List[typing.Tuple[float, float]],
         segments: typing.List[nx.dataset.utils.Segment],  # < original segments before trasform to keypoints.
-    ) -> typing.List[nx.dataset.utils.Segment]:
+        label = None,
+    ) -> typing.Tuple[typing.List[nx.dataset.utils.Segment], typing.List[typing.Tuple[float, float]]]:
         # Convert keypoints to transformed segments:
         # segments is array of point arrays.
         # keypoints is numpy array of keypoints.
@@ -814,22 +814,28 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
         for segment in segments:
             segments_points_count += len(segment.polygon)
 
-        # Skip 4 control points.
-        decode_keypoints = keypoints[4:]
-        assert len(decode_keypoints) % segments_points_count == 0, (
-            "number of keypoints after trasformation " + str(len(decode_keypoints)) +
-            " is not a multiple of " + str(segments_points_count) + "(segment points number)"
+        segment_portion_size = segments_points_count + len(self._corner_keypoints)
+        assert len(keypoints) % segment_portion_size == 0, (
+            "number of keypoints after trasformation " + str(len(keypoints)) +
+            " is not a multiple of " + str(segment_portion_size) +
+            "(segment points number + 4 control points)" +
+            ((" on file: " + label["im_file"]) if label is not None else '')
         )
 
         keypoint_index = 0
         result_segments = []
-        for kp_it in range(len(decode_keypoints) // segments_points_count):  # Process keypoints repeat blocks.
+        corner_points = []
+        for kp_it in range(len(keypoints) // segment_portion_size):  # Process keypoints repeat blocks.
+            corner_points += keypoints[
+                keypoint_index: keypoint_index + len(self._corner_keypoints)
+            ]
+            keypoint_index += len(self._corner_keypoints)  # Skip corner points
             for segment_i, segment in enumerate(segments):
                 result_segment = copy.deepcopy(segment)
                 assert result_segment.polygon is not None   # < BaseDataset should provide only polygon segments.
                 for point_index in range(len(result_segment.polygon)):
-                    result_segment.polygon[point_index] = decode_keypoints[keypoint_index]
+                    result_segment.polygon[point_index] = keypoints[keypoint_index]
                     keypoint_index += 1
                 result_segments.append(result_segment)
 
-        return result_segments
+        return result_segments, corner_points

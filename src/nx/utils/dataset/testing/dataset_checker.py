@@ -12,6 +12,7 @@ import pathlib
 import nx.dataset.utils
 from nx.dataset.albumentation_dataset import AlbumentationDataset
 from nx.dataset.dali_kornia_dataset import DaliKorniaDataset
+from nx.dataset.dataset_filter import DatasetFilter
 
 
 class ConfigStub(object):
@@ -86,6 +87,9 @@ if __name__ == "__main__":
     else:
         dataset = DaliKorniaDataset(**dataset_args)
 
+    dataset = DatasetFilter(dataset)
+    dataset.enable_indexes(None)
+
     all_labels = dataset.get_labels()
     max_index = len(all_labels)
 
@@ -98,8 +102,7 @@ if __name__ == "__main__":
         items = dataset.__getitems__(indexes)
         get_items_end_time = time.time()
         get_items_sum_time = get_items_end_time - get_items_start_time
-        for item, label_index in zip(items, indexes):
-            label = all_labels[label_index]
+        for item in items:
             image_tensor: torch.tensor = item['img']  # < Image after transormation to tensor.
             #print("image_tensor.shape = " + str(image_tensor.shape))
             #print("image_tensor.dtype = " + str(image_tensor.dtype))
@@ -113,7 +116,7 @@ if __name__ == "__main__":
 
             yolo_bboxes = item['bboxes'].numpy().tolist()
             res_file = args.output + "/" + str(op_index) + ".jpg"
-            print("to save image for '" + str(label['im_file']) + "' into '" + res_file + "'")
+            print("to save image for '" + str(item['im_file']) + "' into '" + res_file + "'")
             save_success = cv2.imwrite(res_file, image)
             assert save_success
 
@@ -141,3 +144,4 @@ if __name__ == "__main__":
             op_index += 1
 
     print("Get items sum time: " + str(get_items_sum_time))
+    dataset.cleanup()

@@ -25,6 +25,7 @@ import ultralytics.data.utils
 import ultralytics.nn.autobackend
 
 import nx.dataset.base_dataset
+import nx.train.utils
 from nx.dataset.albumentation_dataset import AlbumentationDataset
 from nx.dataset.dali_kornia_dataset import DaliKorniaDataset
 
@@ -92,17 +93,6 @@ def suppress_stdout():
             sys.stdout = old_stdout
 
 
-def create_validator(callbacks, dataloader = None, args = None):
-    validator = ultralytics.models.yolo.detect.DetectionValidator(
-        dataloader=dataloader,
-        args=args,
-    )
-    validator.metrics.plot = False
-    validator.args.plots = False
-    print("validator.metrics = " + str(id(validator.metrics)), file=sys.stderr)
-    return validator
-
-
 def load_model(model_file, weights_file, data_file):
     logger.info("To load model")
     with suppress_stdout():
@@ -147,21 +137,6 @@ def load_dataset(dataset_root):
     return dataset
 
 
-def create_validator(data_file):
-    device = torch.device('cuda:0')
-    validator = ultralytics.models.yolo.detect.DetectionValidator(
-        dataloader=None,
-        args={
-            'augment': False
-        },
-    )
-    validator.device = device
-    validator.data = ultralytics.data.utils.check_det_dataset(data_file)
-    validator.metrics.plot = False
-    validator.args.plots = False
-    return validator
-
-
 def prepare_batch(validator, items):
     device = torch.device('cuda:0')
     batch = nx.dataset.base_dataset.collate_fn(items)
@@ -186,8 +161,10 @@ def min_val(model_file, weights_file, data_file, dataset_root, percent=0.1):
     device = torch.device('cuda:0')
     val_model = load_model(model_file, weights_file, data_file)
     dataset = load_dataset(dataset_root)
-    validator = create_validator(data_file)
+    validator = nx.train.utils.create_validator(dataset_root)
 
+    mAP_to_label = nx.train.utils.get_labels_mAP()
+    """
     mAP_to_label = {}
     labels = dataset.get_labels()
     for label_index in range(len(labels)):
@@ -214,6 +191,7 @@ def min_val(model_file, weights_file, data_file, dataset_root, percent=0.1):
 
         local_mAP = eval_mAP(validator, val_model, [detect_preds], batch)
         mAP_to_label[(local_mAP, label_index)] = items[0]
+    """
 
     result = []
     cur_index = 0

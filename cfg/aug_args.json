@@ -1,5 +1,5 @@
 {
-    "replace_background_2x2": 0.25,
+    "replace_background_2x2": 0.1,
     "replace_background": 0.3,
     "to_gray": 0.1,
     "hsv": 0.05,
