@@ -245,6 +245,11 @@ class NxCustomTrainer(ultralytics.models.yolo.detect.train.DetectionTrainer):
 
 
 def val(model_file, weights_file, data_file, args=None):
+    """
+    validator = nx.train.utils.create_validator()
+    validator()
+    validator.metrics
+    """
     val_model = ultralytics.YOLO(model_file)
     val_model = val_model.load(weights_file)
     dataset_args = {
@@ -463,11 +468,13 @@ names:
                     file_content = pathlib.Path(args.augment_config).read_text()
                     augment_args = json.loads(file_content)
 
+                """
                 # Add QAT only if it isn't attached already.
                 model_qconfig = getattr(model, "qconfig", None)
                 if model_qconfig is None:
                     model.training = True
                     model = torch.quantization.prepare_qat(model, inplace=True)
+                """
 
                 results = model.train(
                     data=dataFile.name,
