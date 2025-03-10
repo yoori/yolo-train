@@ -124,7 +124,7 @@ class BaseDataset(ultralytics.data.dataset.YOLODataset):
                         else:
                             segments_isolations.append(BaseDataset.IsolateType.NOT_ISOLATED)
                     except RuntimeError as e:
-                        print("Exception: " + str(type(e)))
+                        logger.error("Exception: " + str(type(e)))
                         segments_isolations.append(BaseDataset.IsolateType.NOT_ISOLATED)
                 new_label = {
                     'im_file': str(image_file_path),
