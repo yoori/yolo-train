@@ -7,11 +7,25 @@ import torch
 import cv2
 import ultralytics
 
+import nx.dataset.base_dataset
+
 
 logger = logging.getLogger(__name__)
 
 
-def create_validator(validate_dir_root, device = 'cuda:0'):
+def prepare_batch(validator, items):
+    device = torch.device('cuda:0')
+    batch = nx.dataset.base_dataset.collate_fn(items)
+    # Run only actual steps from ultralytics.engine.validator.BaseValidator.__call__
+    batch = validator.preprocess(batch)
+    for k in ["img", "cls", "bboxes", "batch_idx"]:
+        batch[k] = batch[k].to(device)
+    return batch
+
+
+def create_validator(
+    validate_dir_root: str,
+    device: str = 'cuda:0'):
     validator = ultralytics.models.yolo.detect.DetectionValidator(
         dataloader=None,
         args={
@@ -43,6 +57,7 @@ names:
             ).render({"datasetRoot": validate_dir_root})  # noqa: E124
             f.write(data_conf_str)
         validator.data = ultralytics.data.utils.check_det_dataset(data_file.name)
+
     validator.metrics.plot = False
     validator.args.plots = False
     return validator
@@ -58,14 +73,15 @@ def eval_mAP(validator, model, preds, batch):
     return local_mAP
 
 
-def get_labels_mAP(model, dataset, percent=0.1) -> typing.Dict[
+def get_labels_mAP(model, dataset, dataset_root, percent=0.1) -> typing.Dict[
     typing.Tuple[
         float,  # < mAP
         int  # < label index
     ],
     typing.Dict  # < label
 ]:
-    validator = nx.train.utils.create_validator(dataset_root)
+    device = torch.device('cuda:0')
+    validator = create_validator(dataset_root)
     mAP_to_label = {}
     labels = dataset.get_labels()
     for label_index in range(len(labels)):

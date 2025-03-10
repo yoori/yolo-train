@@ -161,37 +161,8 @@ def min_val(model_file, weights_file, data_file, dataset_root, percent=0.1):
     device = torch.device('cuda:0')
     val_model = load_model(model_file, weights_file, data_file)
     dataset = load_dataset(dataset_root)
-    validator = nx.train.utils.create_validator(dataset_root)
-
-    mAP_to_label = nx.train.utils.get_labels_mAP()
-    """
-    mAP_to_label = {}
     labels = dataset.get_labels()
-    for label_index in range(len(labels)):
-        # Run only actual steps from ultralytics.engine.validator.BaseValidator.__call__
-        if label_index % 1000 == 0:
-            logger.info("Processed " + str(label_index) + "/" + str(len(labels)) + " images")
-        items = dataset.__getitems__([label_index])
-        batch = prepare_batch(validator, items)
-        preds = val_model(batch["img"], augment=False)
-        detect_preds = preds[0]  # < Use only detection part.
-
-        # Filter detections for only expected classes (for use util with standard yolo models).
-        # preds : 0-3, 4: confidence, 5: class
-        filtered_preds = []
-        for p in detect_preds.squeeze().permute(1, 0).tolist():
-            class_index = round(p[5])
-            if class_index < 9:
-                filtered_preds.append(p)
-            else:
-                filtered_preds.append([0] * len(p))
-        detect_preds = torch.FloatTensor([filtered_preds])
-        detect_preds = detect_preds.permute(0, 2, 1)
-        detect_preds = detect_preds.to(device)
-
-        local_mAP = eval_mAP(validator, val_model, [detect_preds], batch)
-        mAP_to_label[(local_mAP, label_index)] = items[0]
-    """
+    mAP_to_label = nx.train.utils.get_labels_mAP(val_model, dataset, dataset_root)
 
     result = []
     cur_index = 0

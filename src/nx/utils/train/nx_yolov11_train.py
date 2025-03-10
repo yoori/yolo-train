@@ -44,6 +44,7 @@ import ultralytics.data.build
 
 import nx.dataset.base_dataset
 import nx.dataset.dataset_filter
+import nx.train.utils
 from nx.dataset.albumentation_dataset import AlbumentationDataset
 from nx.dataset.dali_kornia_dataset import DaliKorniaDataset
 
@@ -245,15 +246,14 @@ class NxCustomTrainer(ultralytics.models.yolo.detect.train.DetectionTrainer):
 
 
 def val(model_file, weights_file, data_file, args=None):
-    """
-    validator = nx.train.utils.create_validator()
-    validator()
-    validator.metrics
-    """
     val_model = ultralytics.YOLO(model_file)
     val_model = val_model.load(weights_file)
+    use_dataset_root = pathlib.Path(args.dataset_root)
+    path_val = use_dataset_root / 'val'
+    if path_val.is_dir():
+        use_dataset_root = path_val
     dataset_args = {
-        'img_path': args.dataset_root + "/val",
+        'img_path': str(use_dataset_root),
         'imgsz': 640,
         'augment': False,
     }
@@ -269,8 +269,6 @@ def val(model_file, weights_file, data_file, args=None):
         batch_size=8,
         num_workers=1,
     )
-
-    print("XXX args: " + str(args))
     metrics = val_model.val(
         data=data_file,
         validator=lambda args, _callbacks: ultralytics.models.yolo.detect.DetectionValidator(
@@ -360,7 +358,7 @@ def main():  # noqa: C901
             dataConfStr = jinja2.Template("""
 path: {{datasetRoot}} # dataset root dir
 train: train # train images (relative to 'path') 4 images
-val: val # val images (relative to 'path') 4 images
+val: {{val}} # val images (relative to 'path') 4 images
 test: # test images (optional)
 scale: n
 
@@ -376,7 +374,10 @@ names:
   7: truck
   8: boat
 """
-            ).render({"datasetRoot": args.dataset_root})  # noqa: E124
+            ).render({
+                "datasetRoot": args.dataset_root,
+                "val": ('val' if args.command == 'train' else '.'),
+            })  # noqa: E124
             f.write(dataConfStr)
 
         print("XXX0 args = " + str(args))
