@@ -651,6 +651,10 @@ def mask_to_segment(mask: np.ndarray):
     return None
 
 
+def normalize_class_name(name: str):
+    return name.strip().lower()
+
+
 def coco_convert(  # noqa: C901
     target_dir,
     coco_json_dir,  # < Directory with *.json annotations in COCO format
@@ -688,8 +692,10 @@ def coco_convert(  # noqa: C901
         if "categories" in data:
             for category in data["categories"]:
                 if "id" in category and "name" in category:
-                    if category["name"] in class_mapping:
-                        class_mapping[str(category["id"])] = class_mapping[category["name"]]
+                    norm_class_name = normalize_class_name(category["name"])
+                    if norm_class_name in class_mapping:
+                        norm_class_name = normalize_class_name(category["name"])
+                        class_mapping[str(category["id"])] = class_mapping[norm_class_name]
 
         if "annotations" in data:
             for ann in data["annotations"]:

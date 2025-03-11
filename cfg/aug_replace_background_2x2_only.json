@@ -1,6 +1,6 @@
 {
-    "replace_background_2x2": 1,
-    "replace_background": 0,
+    "replace_background_2x2": 0.5,
+    "replace_background": 0.5,
     "to_gray": 0,
     "hsv": 0,
     "bgr": 0,

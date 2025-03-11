@@ -294,6 +294,7 @@ def dali_load_and_augment_pipeline(
     keypoints: typing.List[typing.List[typing.Tuple[float, float]]] = None,
     cut_regions: typing.List[typing.Tuple[float, float, float, float]] = None,
     background_files = None,
+    empty_background = None,  # < file path for use as background when it isn't needs.
     return_kornia_format = False,
     apply_only_rect_safe_transformations = False,
     augment_args: typing.Dict = {},
@@ -350,12 +351,30 @@ def dali_load_and_augment_pipeline(
             out_of_bounds_policy='trim_to_shape',  # < avoid pixel out of bound for float defined start and end.
         )
 
+        # Choose images for apply background transformation - for other read 1x1 as background
         # Fill array of background image arrays with shuffled order.
+        do_background_2x2 = dali.fn.random.coin_flip(
+            probability=augment_args.get('replace_background_2x2', 0.25),
+            device='cpu',
+            dtype=dali.types.DALIDataType.BOOL
+        )
         background_jpegs_arr = []
         background_images_arr = []
+        shuffled_background_files_arr = []  # < array of 4 arrays with background images.
+
+        # Fill background files outside of read loop.
+        # DALI have specific problems with compile 'if DataNode' inside loop.
+        if do_background_2x2:
+            for i in range(4):
+                shuffled_background_files = list(background_files)
+                random.shuffle(shuffled_background_files)
+                shuffled_background_files_arr.append(shuffled_background_files)
+        else:
+            for i in range(4):
+                shuffled_background_files_arr.append([ empty_background ] * len(background_files))
+
         for i in range(4):
-            shuffled_background_files = list(background_files)
-            random.shuffle(shuffled_background_files)
+            shuffled_background_files = shuffled_background_files_arr[i]
             background_jpegs, background_labels = dali.fn.readers.file(
                 files=shuffled_background_files,
                 labels=list(range(len(shuffled_background_files))),
@@ -368,11 +387,6 @@ def dali_load_and_augment_pipeline(
             background_jpegs_arr.append(background_jpegs)
             background_images_arr.append(background_images)
 
-        do_background_2x2 = dali.fn.random.coin_flip(
-            probability=augment_args.get('replace_background_2x2', 0.25),
-            device='cpu',
-            dtype=dali.types.DALIDataType.BOOL
-        )
         if do_background_2x2:
             images, process_keypoints = background_paste_2x2(
                 images, mask_images, background_images_arr, keypoints=process_keypoints
@@ -497,6 +511,10 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
         self._cut_segments_for_labels = {}
         self._corner_keypoints = [(0, 0), (1, 0), (1, 1), (0, 1)]
         self._trace_steps = False
+        self._empty_background_file = get_temp_image_name()
+        empty_background_image = np.zeros((1, 1, 3), np.uint8)
+        empty_background_image[:] = (255, 255, 255)
+        cv2.imwrite(self._empty_background_file, empty_background_image)
 
     def build_transforms(self, hyp=None):
         if self._augment:
@@ -672,6 +690,7 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
               files=files,
               mask_files=mask_files,
               background_files=background_files,
+              empty_background=self._empty_background_file,
               keypoints=all_keypoints,
               cut_regions=cut_regions,
               batch_size=len(labels),
