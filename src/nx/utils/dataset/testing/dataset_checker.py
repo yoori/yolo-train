@@ -144,4 +144,5 @@ if __name__ == "__main__":
             op_index += 1
 
     print("Get items sum time: " + str(get_items_sum_time))
+    print("Time per op: " + str(get_items_sum_time / args.ops))
     dataset.cleanup()

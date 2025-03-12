@@ -646,13 +646,7 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
             return res
 
         # Get file paths by indexes.
-        labels = []
-        labels_indexes = []
-        for pos, i in enumerate(indexes):
-            label = copy.copy(self.labels[i])
-            labels.append(label)
-            labels_indexes.append(pos)
-
+        labels = [ copy.copy(self.labels[i]) for i in indexes ]
         result = self._get_items_by_labels(labels)
 
         assert len(result) == len(labels)
@@ -766,30 +760,27 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
         apply_background_cut_regions = []
         apply_background_mask_files = []
         no_cut_region = [0., 0., 1., 1.]
-        for image_file, mask_file, cut_region in zip(files, mask_files, cut_regions):
+        for image_file, mask_file, cut_region, apply_non_rect_safe_transformations_for_image in zip(
+            files, mask_files, cut_regions, apply_non_rect_safe_transformations
+        ):
+            # Apply background replace transformations only for images that have segments annotations (non bbox),
+            # otherwise the model is trained to search for objects along the boundary.
+            # apply_non_rect_safe_transformations is True for images that have segments annotations.
             do_background_2x2 = (
-                random.uniform(0, 1.) < self._augment_args.get('replace_background_2x2', 0.25))
+                apply_non_rect_safe_transformations_for_image and
+                random.uniform(0, 1.) < self._augment_args.get('replace_background_2x2', 0.25)
+            )
+            do_background = (
+                apply_non_rect_safe_transformations_for_image and
+                not do_background_2x2 and
+                random.uniform(0, 1.) < self._augment_args.get('replace_background', 0.25)
+            )
             apply_background_2x2.append(do_background_2x2)
-            if do_background_2x2:
-                apply_background_2x2_mask_files.append(mask_file)
-                apply_background_2x2_cut_regions.append(cut_region)
-
-                apply_background.append(False)
-                apply_background_mask_files.append(self._unused_image_file)
-                apply_background_cut_regions.append(no_cut_region)
-            else:
-                apply_background_2x2_mask_files.append(self._unused_image_file)
-                apply_background_2x2_cut_regions.append(no_cut_region)
-
-                do_background = (
-                    random.uniform(0, 1.) < self._augment_args.get('replace_background', 0.25))
-                apply_background.append(do_background)
-                if do_background:
-                    apply_background_mask_files.append(mask_file)
-                    apply_background_cut_regions.append(cut_region)
-                else:
-                    apply_background_mask_files.append(self._unused_image_file)
-                    apply_background_cut_regions.append(no_cut_region)
+            apply_background.append(do_background)
+            apply_background_2x2_mask_files.append(mask_file if do_background_2x2 else self._unused_image_file)
+            apply_background_2x2_cut_regions.append(cut_region if do_background_2x2 else no_cut_region)
+            apply_background_mask_files.append(mask_file if do_background else self._unused_image_file)
+            apply_background_cut_regions.append(cut_region if do_background else no_cut_region)
 
         assert len(apply_background_2x2) == len(files)
         assert len(apply_background_2x2_mask_files) == len(files)
