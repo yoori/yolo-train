@@ -175,6 +175,10 @@ def get_filename_data(files):
     return files
 
 
+def get_bool(flags):
+    return [np.bool_(flag) for flag in flags]
+
+
 def random_grayscale(images, probability = 1.0):
     do_grayscale = dali.fn.random.coin_flip(
         probability=probability, dtype=dali.types.DALIDataType.BOOL
@@ -286,19 +290,134 @@ def apply_noise_conversions(images, augment_args = {}):
     return images
 
 
+def apply_background_batch(
+    images,
+    process_keypoints,
+    apply_background_source,
+    apply_background_cut_regions,
+    mask_files,
+    background_files,
+):
+    b_cut_rel_start = dali.fn.external_source(
+        source=lambda: get_rel_start_by_bboxes(apply_background_cut_regions),
+        dtype=dali.types.FLOAT
+    )
+    b_cut_rel_end = dali.fn.external_source(
+        source=lambda: get_rel_end_by_bboxes(apply_background_cut_regions),
+        dtype=dali.types.FLOAT
+    )
+    mask_jpegs, mask_labels = dali.fn.readers.file(
+        files = mask_files,
+        labels = list(range(len(mask_files))),
+    )
+    mask_images = dali.fn.decoders.image(
+        mask_jpegs,
+        device="mixed",
+        output_type=dali.types.DALIImageType.BGR
+    )
+    mask_images = dali.fn.slice(
+        mask_images,
+        rel_start=b_cut_rel_start,
+        rel_end=b_cut_rel_end,
+        out_of_bounds_policy='trim_to_shape',  # < avoid pixel out of bound for float defined start and end.
+    )
+
+    shuffled_background_files = list(background_files)
+    random.shuffle(shuffled_background_files)
+    shuffled_background_files = shuffled_background_files[:]
+    background_jpegs, _ = dali.fn.readers.file(
+        files=shuffled_background_files,
+        labels=list(range(len(shuffled_background_files))),
+    )
+    background_images = dali.fn.decoders.image(
+        background_jpegs,
+        device="mixed",
+        output_type=dali.types.DALIImageType.BGR  # < By fact, output will be RGB
+    )
+
+    images, process_keypoints = background_paste(
+        images, mask_images, background_images, keypoints=process_keypoints
+    )
+
+    return images, process_keypoints
+
+
+def apply_background_2x2_batch(
+    images,
+    process_keypoints,
+    apply_background_2x2_source,
+    apply_background_2x2_cut_regions,
+    mask_files,
+    background_files,
+):
+    b2x2_cut_rel_start = dali.fn.external_source(
+        source=lambda: get_rel_start_by_bboxes(apply_background_2x2_cut_regions),
+        dtype=dali.types.FLOAT
+    )
+    b2x2_cut_rel_end = dali.fn.external_source(
+        source=lambda: get_rel_end_by_bboxes(apply_background_2x2_cut_regions),
+        dtype=dali.types.FLOAT
+    )
+    mask_jpegs, mask_labels = dali.fn.readers.file(
+        files = mask_files,
+        labels = list(range(len(mask_files))),
+    )
+    mask_images = dali.fn.decoders.image(
+        mask_jpegs,
+        device="mixed",
+        output_type=dali.types.DALIImageType.BGR
+    )
+    mask_images = dali.fn.slice(
+        mask_images,
+        rel_start=b2x2_cut_rel_start,
+        rel_end=b2x2_cut_rel_end,
+        out_of_bounds_policy='trim_to_shape',  # < avoid pixel out of bound for float defined start and end.
+    )
+
+    background_images_arr = []
+    for i in range(4):
+        shuffled_background_files = list(background_files)
+        random.shuffle(shuffled_background_files)
+        shuffled_background_files = shuffled_background_files[:len(mask_files)]
+        background_jpegs, _ = dali.fn.readers.file(
+            files=shuffled_background_files,
+            labels=list(range(len(shuffled_background_files))),
+        )
+        background_images = dali.fn.decoders.image(
+            background_jpegs,
+            device="mixed",
+            output_type=dali.types.DALIImageType.BGR  # < By fact, output will be RGB
+        )
+        background_images_arr.append(background_images)
+
+    images, process_keypoints = background_paste_2x2(
+        images, mask_images, background_images_arr, keypoints=process_keypoints
+    )
+
+    return images, process_keypoints
+
+
 # cut_regions: regions of images that we process (keypoints should be defined relative these regions)
 @dali.pipeline_def(enable_conditionals=True, exec_dynamic=True)
 def dali_load_and_augment_pipeline(
     files: typing.List[str] = None,
-    mask_files: typing.List[str] = None,
     keypoints: typing.List[typing.List[typing.Tuple[float, float]]] = None,
     cut_regions: typing.List[typing.Tuple[float, float, float, float]] = None,
-    background_files = None,
-    empty_background = None,  # < file path for use as background when it isn't needs.
     return_kornia_format = False,
     apply_only_rect_safe_transformations = False,
     augment_args: typing.Dict = {},
-    manual_garbage_collection = False
+    manual_garbage_collection = False,
+    mask_files: typing.List[str] = None, # mask files for images.
+    background_files = None,
+    # Parameters for control background 2x2 augmentation.
+    apply_background_2x2 = None, # boolean array of apply 2x2 augmentation.
+    apply_background_2x2_cut_regions: typing.List[typing.Tuple[float, float, float, float]] = None,
+    apply_background_2x2_mask_files = None,
+    # < Duplicate cut_regions, but only for images with enabled background_2x2
+    # Parameters for control background augmentation.
+    apply_background = None, # boolean array of apply background augmentation.
+    apply_background_cut_regions = None,
+    apply_background_mask_files = None,
 ):
     result_size = 640
 
@@ -334,73 +453,38 @@ def dali_load_and_augment_pipeline(
 
     # Make backround paste transformations before all other augmentations (
     # mask should have correct position for apply it).
-    if mask_files and background_files:
-        mask_jpegs, mask_labels = dali.fn.readers.file(
-            files = mask_files,
-            labels = list(range(len(mask_files))),
-        )
-        mask_images = dali.fn.decoders.image(
-            mask_jpegs,
-            device="mixed",
-            output_type=dali.types.DALIImageType.BGR  # < By fact, output will be RGB
-        )
-        mask_images = dali.fn.slice(
-            mask_images,
-            rel_start=cut_rel_start,
-            rel_end=cut_rel_end,
-            out_of_bounds_policy='trim_to_shape',  # < avoid pixel out of bound for float defined start and end.
-        )
 
-        # Choose images for apply background transformation - for other read 1x1 as background
-        # Fill array of background image arrays with shuffled order.
-        do_background_2x2 = dali.fn.random.coin_flip(
-            probability=augment_args.get('replace_background_2x2', 0.25),
-            device='cpu',
-            dtype=dali.types.DALIDataType.BOOL
+    # Apply background augmentation.
+    if apply_background and apply_background.count(True) > 0:
+        apply_background_source = dali.fn.external_source(
+            source=lambda: get_bool(apply_background),
+            dtype=dali.types.BOOL
         )
-        background_jpegs_arr = []
-        background_images_arr = []
-        shuffled_background_files_arr = []  # < array of 4 arrays with background images.
+        if apply_background_source:
+            images, process_keypoints = apply_background_batch(
+                images,
+                process_keypoints,
+                apply_background_source,
+                apply_background_cut_regions,
+                apply_background_mask_files,
+                background_files,
+            )
 
-        # Fill background files outside of read loop.
-        # DALI have specific problems with compile 'if DataNode' inside loop.
-        if do_background_2x2:
-            for i in range(4):
-                shuffled_background_files = list(background_files)
-                random.shuffle(shuffled_background_files)
-                shuffled_background_files_arr.append(shuffled_background_files)
-        else:
-            for i in range(4):
-                shuffled_background_files_arr.append([ empty_background ] * len(background_files))
-
-        for i in range(4):
-            shuffled_background_files = shuffled_background_files_arr[i]
-            background_jpegs, background_labels = dali.fn.readers.file(
-                files=shuffled_background_files,
-                labels=list(range(len(shuffled_background_files))),
+    # Apply background 2x2 augmentation.
+    if apply_background_2x2 and apply_background_2x2.count(True) > 0:
+        apply_background_2x2_source = dali.fn.external_source(
+            source=lambda: get_bool(apply_background_2x2),
+            dtype=dali.types.BOOL
+        )
+        if apply_background_2x2_source:
+            images, process_keypoints = apply_background_2x2_batch(
+                images,
+                process_keypoints,
+                apply_background_2x2_source,
+                apply_background_2x2_cut_regions,
+                apply_background_2x2_mask_files,
+                background_files,
             )
-            background_images = dali.fn.decoders.image(
-                background_jpegs,
-                device="mixed",
-                output_type=dali.types.DALIImageType.BGR  # < By fact, output will be RGB
-            )
-            background_jpegs_arr.append(background_jpegs)
-            background_images_arr.append(background_images)
-
-        if do_background_2x2:
-            images, process_keypoints = background_paste_2x2(
-                images, mask_images, background_images_arr, keypoints=process_keypoints
-            )
-        else:
-            do_background = dali.fn.random.coin_flip(
-                probability=augment_args.get('replace_background', 0.3),
-                device='cpu',
-                dtype=dali.types.DALIDataType.BOOL
-            )
-            if do_background:
-                images, process_keypoints = background_paste(
-                    images, mask_images, background_images_arr[0], keypoints=process_keypoints
-                )
 
     # Color space conversions.
     images = apply_color_space_conversions(images, augment_args=augment_args)
@@ -511,10 +595,12 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
         self._cut_segments_for_labels = {}
         self._corner_keypoints = [(0, 0), (1, 0), (1, 1), (0, 1)]
         self._trace_steps = False
-        self._empty_background_file = get_temp_image_name()
-        empty_background_image = np.zeros((1, 1, 3), np.uint8)
-        empty_background_image[:] = (255, 255, 255)
-        cv2.imwrite(self._empty_background_file, empty_background_image)
+        self._unused_image_file = get_temp_image_name()
+        # DALI pipeline require equal size of TensorList's for operations,
+        # for fill image in case when it isn't will be used we use 1x1 image.
+        unused_image_file = np.zeros((1, 1, 3), np.uint8)
+        unused_image_file[:] = (0, 254, 0)
+        cv2.imwrite(self._unused_image_file, unused_image_file)
 
     def build_transforms(self, hyp=None):
         if self._augment:
@@ -683,14 +769,50 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
         gc.collect()  # Run garbage collection manually for minimize maximum gpu memory usage at point of time.
         gc.enable()
 
-        #self._trace("_get_items_by_labels: step 4")
+        apply_background_2x2 = []
+        apply_background_2x2_cut_regions = []
+        apply_background_2x2_mask_files = []
+        apply_background = []
+        apply_background_cut_regions = []
+        apply_background_mask_files = []
+        no_cut_region = [0., 0., 1., 1.]
+        for image_file, mask_file, cut_region in zip(files, mask_files, cut_regions):
+            do_background_2x2 = (
+                random.uniform(0, 1.) < self._augment_args.get('replace_background_2x2', 0.25))
+            apply_background_2x2.append(do_background_2x2)
+            if do_background_2x2:
+                apply_background_2x2_mask_files.append(mask_file)
+                apply_background_2x2_cut_regions.append(cut_region)
+
+                apply_background.append(False)
+                apply_background_mask_files.append(self._unused_image_file)
+                apply_background_cut_regions.append(no_cut_region)
+            else:
+                apply_background_2x2_mask_files.append(self._unused_image_file)
+                apply_background_2x2_cut_regions.append(no_cut_region)
+
+                do_background = (
+                    random.uniform(0, 1.) < self._augment_args.get('replace_background', 0.25))
+                apply_background.append(do_background)
+                if do_background:
+                    apply_background_mask_files.append(mask_file)
+                    apply_background_cut_regions.append(cut_region)
+                else:
+                    apply_background_mask_files.append(self._unused_image_file)
+                    apply_background_cut_regions.append(no_cut_region)
+
+        assert len(apply_background_2x2) == len(files)
+        assert len(apply_background_2x2_mask_files) == len(files)
+        assert len(apply_background_2x2_cut_regions) == len(files)
+
+        assert len(apply_background) == len(files)
+        assert len(apply_background_mask_files) == len(files)
+        assert len(apply_background_cut_regions) == len(files)
 
         try:
           pipe = dali_load_and_augment_pipeline(
               files=files,
-              mask_files=mask_files,
               background_files=background_files,
-              empty_background=self._empty_background_file,
               keypoints=all_keypoints,
               cut_regions=cut_regions,
               batch_size=len(labels),
@@ -699,6 +821,14 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
               apply_only_rect_safe_transformations=apply_only_rect_safe_transformations,
               augment_args=self._augment_args,
               manual_garbage_collection=False, #True,
+              # 2x2 background augmentation parameters.
+              apply_background_2x2=apply_background_2x2,
+              apply_background_2x2_cut_regions=apply_background_2x2_cut_regions,
+              apply_background_2x2_mask_files=apply_background_2x2_mask_files,
+              # background augmentation parameters.
+              apply_background=apply_background,
+              apply_background_cut_regions=apply_background_cut_regions,
+              apply_background_mask_files=apply_background_mask_files,
           )
           pipe.build()
 

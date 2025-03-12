@@ -18,5 +18,5 @@
     "mixup3": 0,
     "mixup2": 0,
     "object_mosaic": 0,
-    "object_overlay_mosaic": 0.5
+    "object_overlay_mosaic": 0
 }
