@@ -404,7 +404,7 @@ def dali_load_and_augment_pipeline(
     keypoints: typing.List[typing.List[typing.Tuple[float, float]]] = None,
     cut_regions: typing.List[typing.Tuple[float, float, float, float]] = None,
     return_kornia_format = False,
-    apply_only_rect_safe_transformations = False,
+    apply_non_rect_safe_transformations: typing.List[bool] = None,
     augment_args: typing.Dict = {},
     manual_garbage_collection = False,
     mask_files: typing.List[str] = None, # mask files for images.
@@ -498,7 +498,12 @@ def dali_load_and_augment_pipeline(
     if manual_garbage_collection:
         gc.collect()
 
-    if not apply_only_rect_safe_transformations:
+    apply_non_rect_safe_transformations_source = dali.fn.external_source(
+        source=lambda: get_bool(apply_non_rect_safe_transformations),
+        dtype=dali.types.BOOL
+    )
+
+    if apply_non_rect_safe_transformations_source:
         # Transformations with coordinates change.
         # rotate before pad for keep image inside viewport fully.
         do_rotate = dali.fn.random.coin_flip(
@@ -643,35 +648,14 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
         # Get file paths by indexes.
         labels = []
         labels_indexes = []
-        can_apply_only_rect_safe_labels = []
-        can_apply_only_rect_safe_labels_indexes = []
         for pos, i in enumerate(indexes):
             label = copy.copy(self.labels[i])
-            if label['can_apply_only_rect_safe_transformations']:
-                can_apply_only_rect_safe_labels.append(label)
-                can_apply_only_rect_safe_labels_indexes.append(pos)
-            else:
-                labels.append(label)
-                labels_indexes.append(pos)
+            labels.append(label)
+            labels_indexes.append(pos)
 
-        result = [None for i in range(len(indexes))]
-        if len(labels) > 0:
-            labels_result = self._get_items_by_labels(
-                labels,
-                apply_only_rect_safe_transformations=False
-            )
-            for labels_result_i, label_result in enumerate(labels_result):
-                result[labels_indexes[labels_result_i]] = label_result
+        result = self._get_items_by_labels(labels)
 
-        if len(can_apply_only_rect_safe_labels) > 0:
-            can_apply_only_rect_safe_labels_result = self._get_items_by_labels(
-                can_apply_only_rect_safe_labels,
-                apply_only_rect_safe_transformations=True
-            )
-            for labels_result_i, label_result in enumerate(can_apply_only_rect_safe_labels_result):
-                result[can_apply_only_rect_safe_labels_indexes[labels_result_i]] = label_result
-
-        assert len([x for x in result if x is None]) == 0
+        assert len(result) == len(labels)
 
         self._trace("from __getitems__")
         return result
@@ -697,7 +681,7 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
             self._augment_args['replace_background'] > 0.00001
         )
 
-    def _get_items_by_labels(self, labels, apply_only_rect_safe_transformations=False):  # noqa: C901
+    def _get_items_by_labels(self, labels):  # noqa: C901
         # Convert segments to keypoints for transform.
         all_keypoints = []
         files = []
@@ -718,7 +702,13 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
         apply_object_mosaics = []
         cut_regions = []
         label_segments = []
+        # Flags that control non rect safe trasformations applying.
+        apply_non_rect_safe_transformations: typing.List[bool] = []
+
         for label in labels:
+            apply_non_rect_safe_transformations.append(
+                not label.get('can_apply_only_rect_safe_transformations', True)
+            )
             object_mosaic_mode = nx.dataset.mosaic_utils.ObjectMosaicMode.NONE
             if random.uniform(0, 1) < object_mosaic_probability:
                 object_mosaic_mode = nx.dataset.mosaic_utils.ObjectMosaicMode.SIMPLE
@@ -818,7 +808,7 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
               batch_size=len(labels),
               num_threads=1,
               device_id=0,
-              apply_only_rect_safe_transformations=apply_only_rect_safe_transformations,
+              apply_non_rect_safe_transformations=apply_non_rect_safe_transformations,
               augment_args=self._augment_args,
               manual_garbage_collection=False, #True,
               # 2x2 background augmentation parameters.
