@@ -58,6 +58,11 @@ def pad_image(image, segments, result_width = 40, result_height = 40):
     return image, result_segments
 
 
+def copy_non_same(src_path, dst_path):
+    if src_path != dst_path:
+        shutil.copy(src_path, dst_path)
+
+
 def fill_mosaics(
     target_dir: typing.Union[str, pathlib.Path],
     source_dir: typing.Union[str, pathlib.Path],
@@ -150,14 +155,14 @@ def fill_mosaics(
                     image_height=new_h,
                 )
             else:
-                logger.debug("Save image as is: " + str(ann_file.stem))
-                shutil.copy(
+                #logger.debug("Save image as is: " + str(ann_file.stem))
+                copy_non_same(
                     ann_file.parent / (ann_file.stem + ".jpg"),
-                    pathlib.Path(target_dir) / str(ann_file.stem + ".jpg"),
+                    pathlib.Path(target_dir) / str(ann_file.stem + ".jpg")
                 )
-                shutil.copy(
+                copy_non_same(
                     ann_file.parent / (ann_file.stem + ".json"),
-                    pathlib.Path(target_dir) / str(ann_file.stem + ".json"),
+                    pathlib.Path(target_dir) / str(ann_file.stem + ".json")
                 )
 
     # Order mosaic candidates for get equal result between runs.
@@ -235,11 +240,11 @@ def fill_mosaics(
             else:  # < No other images for push to masaic, store image as is.
                 result_file = used_files[0].name
                 logger.debug("Save mosaic candidate as is: " + str(result_file))
-                shutil.copy(
+                copy_non_same(
                     used_files[0].parent / (used_files[0].name + ".jpg"),
                     pathlib.Path(target_dir) / str(result_file + ".jpg"),
                 )
-                shutil.copy(
+                copy_non_same(
                     used_files[0].parent / (used_files[0].name + ".json"),
                     pathlib.Path(target_dir) / str(result_file + ".json"),
                 )
