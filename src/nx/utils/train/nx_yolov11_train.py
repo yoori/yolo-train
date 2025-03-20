@@ -36,6 +36,7 @@ import argparse
 import json
 import pathlib
 import enum
+import gc
 import dataclasses
 import torch
 import torch.quantization
@@ -58,12 +59,17 @@ nc: 9 # number of classes
 
 scales: # model compound scaling constants, i.e. 'model=yolo11n.yaml' will call yolo11.yaml with scale 'n'
   # [depth, width, max_channels]
+{% if scale == "n" %}
   n: [0.50, 0.25, 1024] # summary: 319 layers, 2624080 parameters, 2624064 gradients, 6.6 GFLOPs
-
-#  s: [0.50, 0.50, 1024] # summary: 319 layers, 9458752 parameters, 9458736 gradients, 21.7 GFLOPs
-#  m: [0.50, 1.00, 512] # summary: 409 layers, 20114688 parameters, 20114672 gradients, 68.5 GFLOPs
-#  l: [1.00, 1.00, 512] # summary: 631 layers, 25372160 parameters, 25372144 gradients, 87.6 GFLOPs
-#  x: [1.00, 1.50, 512] # summary: 631 layers, 56966176 parameters, 56966160 gradients, 196.0 GFLOPs
+{% elif scale == "s" %}
+  s: [0.50, 0.50, 1024] # summary: 319 layers, 9458752 parameters, 9458736 gradients, 21.7 GFLOPs
+{% elif scale == "m" %}
+  m: [0.50, 1.00, 512] # summary: 409 layers, 20114688 parameters, 20114672 gradients, 68.5 GFLOPs
+{% elif scale == "l" %}
+  l: [1.00, 1.00, 512] # summary: 631 layers, 25372160 parameters, 25372144 gradients, 87.6 GFLOPs
+{% elif scale == "x" %}
+  x: [1.00, 1.50, 512] # summary: 631 layers, 56966176 parameters, 56966160 gradients, 196.0 GFLOPs
+{% endif %}
 
 # YOLO11n backbone
 backbone:
@@ -181,6 +187,8 @@ class NxCustomTrainer(ultralytics.models.yolo.detect.train.DetectionTrainer):
         self._augment = augment
         self._augment_args = augment_args
         self.add_callback('on_train_epoch_start', lambda x: self.on_start_epoch_())
+        self.add_callback('on_train_batch_start', lambda x: self.on_train_batch_start_())
+        self.add_callback('on_train_batch_end', lambda x: self.on_train_batch_end_())
         self.epoch_plan = [
             NxCustomTrainer.EpochMode(
                 mode=NxCustomTrainer.EpochMode.Mode.ALL,
@@ -188,10 +196,21 @@ class NxCustomTrainer(ultralytics.models.yolo.detect.train.DetectionTrainer):
             )
         ] * 1000
         self.dataset_filter = None
+        self._batch_index = 0
 
     def on_start_epoch_(self):
         epoch = self.epoch
+        self._batch_index = 0
         # set dataset mode, one of: full, worst_map(percent)
+
+    def on_train_batch_start_(self):
+        # Clear torch cache between dataloader loading and NN backward
+        torch.cuda.empty_cache()
+
+    def on_train_batch_end_(self):
+        self._batch_index += 1
+        torch.cuda.empty_cache()
+        #gc.collect()
 
     def plot_training_labels(self):
         return super().plot_training_labels()
@@ -314,6 +333,7 @@ def prepare_args_parser():
         '--resume-model', help='resume training by state in this model',
         type=str, default=None,
     )
+    train_parser.add_argument('--scale', help='scale', type=str, default='n')
 
     train_parser.set_defaults(augment=True, resume=False)
 
@@ -334,6 +354,7 @@ def prepare_args_parser():
         ],
         default='dali'
     )
+    validate_parser.add_argument('--scale', help='scale', type=str, default='n')
 
     # Configure 'tune' command.
     tune_parser = subparsers.add_parser('tune')
@@ -352,7 +373,7 @@ def main():  # noqa: C901
         tempfile.NamedTemporaryFile(suffix='.yaml') as dataFile:  # noqa: E125
         logger.info("Model file: " + str(modelFile.name))
         with open(modelFile.name, mode='w') as f:
-            f.write(NX_YOLO_MODEL_CONFIG)
+            f.write(jinja2.Template(NX_YOLO_MODEL_CONFIG).render({'scale': args.scale}))
 
         with open(dataFile.name, mode='w') as f:
             dataConfStr = jinja2.Template("""
@@ -360,7 +381,7 @@ path: {{datasetRoot}} # dataset root dir
 train: train # train images (relative to 'path') 4 images
 val: {{val}} # val images (relative to 'path') 4 images
 test: # test images (optional)
-scale: n
+scale: {{scale}}
 
 # Classes
 names:
@@ -377,12 +398,15 @@ names:
             ).render({
                 "datasetRoot": args.dataset_root,
                 "val": ('val' if args.command == 'train' else '.'),
+                'scale': args.scale,
             })  # noqa: E124
             f.write(dataConfStr)
 
         print("XXX0 args = " + str(args))
         if args.command == 'train':
-            add_args = {}
+            add_args = {
+                'nbs': args.batch * 10  #< Optimize at each 10 iterations
+            }
             if args.resume:
                 add_args['resume'] = True
             if args.freeze is not None:
@@ -487,6 +511,7 @@ names:
                     patience=20,
                     device='cuda:0',
                     augment=args.augment,
+                    plots=False,
                     trainer=lambda overrides, _callbacks: NxCustomTrainer(
                         dataset_mode=args.mode,
                         data_loader_workers=args.data_loader_workers,
