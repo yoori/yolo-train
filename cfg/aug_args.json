@@ -1,6 +1,6 @@
 {
     "replace_background_2x2": 0.1,
-    "replace_background": 0.3,
+    "replace_background": 0.2,
     "to_gray": 0.1,
     "hsv": 0.05,
     "bgr": 0.1,
@@ -13,10 +13,10 @@
     "grid_mask": 0.1,
     "rotate": 0.2,
     "paste": 0.05,
-    "hflip": 0.3,
-    "vflip": 0.05,
-    "mixup3": 0.1,
-    "mixup2": 0.2,
+    "hflip": 0.5,
+    "vflip": 0.1,
+    "mixup3": 0.05,
+    "mixup2": 0.1,
     "object_mosaic": 0.1,
     "object_overlay_mosaic": 0.1
 }

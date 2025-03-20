@@ -11,7 +11,7 @@
     "gaussian_noise": 0,
     "salt_and_pepper": 0,
     "grid_mask": 0,
-    "rotate": 0,
+    "rotate": 1,
     "paste": 0,
     "hflip": 0,
     "vflip": 0,
