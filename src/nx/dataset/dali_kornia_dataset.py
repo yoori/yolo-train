@@ -649,7 +649,8 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
         labels = [ copy.copy(self.labels[i]) for i in indexes ]
         result = self._get_items_by_labels(labels)
 
-        assert len(result) == len(labels)
+        # Don't assert if result empty - error on processing
+        assert len(result) == len(labels) or len(result) == 0
 
         self._trace("from __getitems__")
         return result
@@ -749,10 +750,6 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
         self._trace("_get_items_by_labels: step 3")
         get_items_start_time = time.time()
 
-        gc.disable()
-        gc.collect()  # Run garbage collection manually for minimize maximum gpu memory usage at point of time.
-        gc.enable()
-
         apply_background_2x2 = []
         apply_background_2x2_cut_regions = []
         apply_background_2x2_mask_files = []
@@ -791,194 +788,210 @@ class DaliKorniaDataset(nx.dataset.base_dataset.BaseDataset):
         assert len(apply_background_cut_regions) == len(files)
 
         try:
-          pipe = dali_load_and_augment_pipeline(
-              files=files,
-              background_files=background_files,
-              keypoints=all_keypoints,
-              cut_regions=cut_regions,
-              batch_size=len(labels),
-              num_threads=1,
-              device_id=0,
-              apply_non_rect_safe_transformations=apply_non_rect_safe_transformations,
-              augment_args=self._augment_args,
-              manual_garbage_collection=False, #True,
-              # 2x2 background augmentation parameters.
-              apply_background_2x2=apply_background_2x2,
-              apply_background_2x2_cut_regions=apply_background_2x2_cut_regions,
-              apply_background_2x2_mask_files=apply_background_2x2_mask_files,
-              # background augmentation parameters.
-              apply_background=apply_background,
-              apply_background_cut_regions=apply_background_cut_regions,
-              apply_background_mask_files=apply_background_mask_files,
-          )
-          pipe.build()
+            pipe = dali_load_and_augment_pipeline(
+                files=files,
+                background_files=background_files,
+                keypoints=all_keypoints,
+                cut_regions=cut_regions,
+                batch_size=len(labels),
+                num_threads=1,
+                device_id=0,
+                apply_non_rect_safe_transformations=apply_non_rect_safe_transformations,
+                augment_args=self._augment_args,
+                manual_garbage_collection=False, #True,
+                # 2x2 background augmentation parameters.
+                apply_background_2x2=apply_background_2x2,
+                apply_background_2x2_cut_regions=apply_background_2x2_cut_regions,
+                apply_background_2x2_mask_files=apply_background_2x2_mask_files,
+                # background augmentation parameters.
+                apply_background=apply_background,
+                apply_background_cut_regions=apply_background_cut_regions,
+                apply_background_mask_files=apply_background_mask_files,
+            )
+            pipe.build()
 
-          image_batch, label_batch, keypoints_batch = pipe.run()
-          pipe = None  # < Free memory
+            image_batch, label_batch, keypoints_batch = pipe.run()
+            pipe = None  # < Free memory
 
-          dali_tensor = image_batch.as_tensor()
-          image_batch = None
-          label_tensor = label_batch.as_tensor()
-          label_batch = None
+            dali_tensor = image_batch.as_tensor()
+            image_batch = None
+            label_tensor = label_batch.as_tensor()
+            label_batch = None
 
-          images_torch_tensor = torch.empty(dali_tensor.shape(), dtype=torch.uint8, device=torch.device('cuda:0'))
-          dali_plugin_pytorch.feed_ndarray(dali_tensor, images_torch_tensor)
-          dali_tensor = None
+            images_torch_tensor = torch.empty(dali_tensor.shape(), dtype=torch.uint8, device=torch.device('cuda:0'))
+            dali_plugin_pytorch.feed_ndarray(dali_tensor, images_torch_tensor)
+            dali_tensor = None
 
-          labels_torch_tensor = torch.empty(label_tensor.shape(), dtype=torch.int32, device=torch.device('cpu'))
-          dali_plugin_pytorch.feed_ndarray(label_tensor, labels_torch_tensor)
-          label_tensor = None
+            labels_torch_tensor = torch.empty(label_tensor.shape(), dtype=torch.int32, device=torch.device('cpu'))
+            dali_plugin_pytorch.feed_ndarray(label_tensor, labels_torch_tensor)
+            label_tensor = None
 
-          keypoints = []
-          for k in keypoints_batch:  # keypoints_batch is list of dali tensors.
-              keyword_torch_tensor = torch.empty(k.shape(), dtype=torch.float32, device=torch.device('cpu'))
-              dali.plugin.pytorch.feed_ndarray(k, keyword_torch_tensor)
-              keypoints.append(keyword_torch_tensor.numpy().tolist())
+            keypoints = []
+            for k in keypoints_batch:  # keypoints_batch is list of dali tensors.
+                keyword_torch_tensor = torch.empty(k.shape(), dtype=torch.float32, device=torch.device('cpu'))
+                dali.plugin.pytorch.feed_ndarray(k, keyword_torch_tensor)
+                keypoints.append(keyword_torch_tensor.numpy().tolist())
 
-          get_items_end_time = time.time()
-          get_items_sum_time = get_items_end_time - get_items_start_time
-          logger.debug("Getting items finished at " + str(get_items_sum_time) + "seconds")
+            get_items_end_time = time.time()
+            get_items_sum_time = get_items_end_time - get_items_start_time
+            logger.debug("Getting items finished at " + str(get_items_sum_time) + "seconds")
 
-          result = []
-          corner_points = []
-          for image_tensor, file_index_tensor, item_keypoints, segments in zip(
-              images_torch_tensor,
-              labels_torch_tensor,
-              keypoints,
-              label_segments  # < Decode keypoints with using segments used for fill it.
-          ):
-              image_shape = (image_tensor.shape[1], image_tensor.shape[2])  # < HW
-              h, w = image_shape
-              file_index = file_index_tensor.item()
-              label = labels[file_index]  # < Here we use copy of label.
+            assert len(images_torch_tensor) == len(files)
+            assert len(images_torch_tensor) == len(labels)
 
-              # Fill segments by keypoints.
-              segments, local_corner_points = self.keypoints_to_segments(
-                  item_keypoints,
-                  segments,
-                  label=label,
-              )
-              corner_points.append(local_corner_points)
+            result = []
+            corner_points = []
+            for image_tensor, file_index_tensor, item_keypoints, segments in zip(
+                images_torch_tensor,
+                labels_torch_tensor,
+                keypoints,
+                label_segments  # < Decode keypoints with using segments used for fill it.
+            ):
+                image_shape = (image_tensor.shape[1], image_tensor.shape[2])  # < HW
+                h, w = image_shape
+                file_index = file_index_tensor.item()
+                label = labels[file_index]  # < Here we use copy of label.
 
-              """
-              __getitems__ should return (h=640, w=481):
-              im_file: str
-              img: torch.tensor
-              ori_shape: (h, w)
-              resized_shape: (imgsz, imgsz)
-              shape: (h, w)
-              batch_idx: : torch.tensor([0.])
-              cls: torch.tensor([[0.]])
-              bboxes: torch.tensor([[0.6947, 0.5982, 0.4784, 0.7176]])
-              """
-              label['img'] = image_tensor
-              label['ori_shape'] = image_shape
-              label['shape'] = image_shape
-              label['resized_shape'] = image_shape
-              label['loaded_segments'] = segments
-              label['ratio_pad'] = ((1.0, 1.0), (1, 1))
+                # Fill segments by keypoints.
+                segments, local_corner_points = self.keypoints_to_segments(
+                    item_keypoints,
+                    segments,
+                    label=label,
+                )
+                corner_points.append(local_corner_points)
 
-              result.append(label)
+                """
+                __getitems__ should return (h=640, w=481):
+                im_file: str
+                img: torch.tensor
+                ori_shape: (h, w)
+                resized_shape: (imgsz, imgsz)
+                shape: (h, w)
+                batch_idx: : torch.tensor([0.])
+                cls: torch.tensor([[0.]])
+                bboxes: torch.tensor([[0.6947, 0.5982, 0.4784, 0.7176]])
+                """
+                label['img'] = image_tensor
+                label['ori_shape'] = image_shape
+                label['shape'] = image_shape
+                label['resized_shape'] = image_shape
+                label['loaded_segments'] = segments
+                label['ratio_pad'] = ((1.0, 1.0), (1, 1))
 
-          self._trace("_get_items_by_labels: step 7")
+                result.append(label)
 
-          # Apply mosaic augmentation for images selected for object cut.
-          for label, apply_object_mosaic, cut_region, corner_keypoints in zip(
-                  result, apply_object_mosaics, cut_regions, corner_points
-          ):
-              if apply_object_mosaic != nx.dataset.mosaic_utils.ObjectMosaicMode.NONE:
-                  # revert padding
-                  _, height, width = label['img'].shape
-                  x_left = min(c[0] for c in corner_keypoints)
-                  x_right = max(c[0] for c in corner_keypoints)
-                  y_top = min(c[1] for c in corner_keypoints)
-                  y_bottom = max(c[1] for c in corner_keypoints)
-                  x_left_int = int(x_left * width)
-                  x_right_int = int(x_right * width)
-                  y_top_int = int(y_top * height)
-                  y_bottom_int = int(y_bottom * height)
-                  segments = label['loaded_segments']
-                  for s in segments:
-                      if s.bbox is not None:
-                          s.bbox[0] = (s.bbox[0] - x_left) / (x_right - x_left)
-                          s.bbox[1] = (s.bbox[1] - y_top) / (y_bottom - y_top)
-                          s.bbox[2] = (s.bbox[2] - x_left) / (x_right - x_left)
-                          s.bbox[3] = (s.bbox[3] - y_top) / (y_bottom - y_top)
-                      else:
-                          s.polygon = [
-                              ((p[0] - x_left) / (x_right - x_left), (p[1] - y_top) / (y_bottom - y_top))
-                              for p in s.polygon
-                          ]
-                  label['img'] = label['img'][:, y_top_int:y_bottom_int, x_left_int:x_right_int]
-                  label['img'], label['loaded_segments'] = nx.dataset.mosaic_utils.cut_and_paste_object_as_mosaic(
-                      label['img'],
-                      [(0, 0, 1, 1)],
-                      segments,
-                      result_width=640,
-                      result_height=640,
-                      mode=apply_object_mosaic
-                  )
+            assert len(result) == len(labels)
 
-          self._trace("_get_items_by_labels: step 8")
-          # Apply mixup augmentation (with using kornia)
-          mixup3_probability = self._augment_args.get('mixup3', 0)
-          mixup2_probability = self._augment_args.get('mixup2', 0)
-          if len(result) > 1:
-              for label_i, label in enumerate(result):
-                  if random.uniform(0, 1) < mixup3_probability:
-                      label_for_mix1 = DaliKorniaDataset.select_random_label(result, label_i)
-                      label_for_mix2 = DaliKorniaDataset.select_random_label(result, label_i)
-                      delta_coef = 0.02
-                      mix_coef1 = random.uniform(0.33 - delta_coef, 0.33 + delta_coef)
-                      mix_coef2 = random.uniform(0.33 - delta_coef, 0.33 + delta_coef)
-                      label['img'] = (
-                          label['img'].to(torch.float32) * mix_coef1 +
-                          label_for_mix1['img'].to(torch.float32) * mix_coef2 +
-                          label_for_mix2['img'].to(torch.float32) * (1 - mix_coef1 - mix_coef2)
-                      ).to(torch.uint8)
-                      label['loaded_segments'] = (
-                          label['loaded_segments'] +
-                          label_for_mix1['loaded_segments'] +
-                          label_for_mix2['loaded_segments']
-                      )
-                  elif random.uniform(0, 1) < mixup2_probability:
-                      label_for_mix = DaliKorniaDataset.select_random_label(result, label_i)
-                      mix_coef = random.uniform(0.33, 0.66)
-                      label['img'] = (
-                          label['img'].to(torch.float32) * mix_coef +
-                          label_for_mix['img'].to(torch.float32) * (1 - mix_coef)
-                      ).to(torch.uint8)
-                      label['loaded_segments'] = (label['loaded_segments'] + label_for_mix['loaded_segments'])
+            self._trace("_get_items_by_labels: step 7")
 
-          # Fill bboxes and cls by result segments.
-          for label in result:
-              resized_shape = label['resized_shape']  # < HW
-              h, w = resized_shape
-              segments = copy.deepcopy(label['loaded_segments'])
-              result_classes, result_bboxes, segments = nx.dataset.utils.segments_to_bboxes(
-                  segments,
-                  image_width=w,
-                  image_height=h,
-              )
-              assert len(result_classes) == len(segments)
-              label['cls'] = torch.tensor(result_classes)
-              label['bboxes'] = torch.tensor(result_bboxes)
-              # batch_idx should be batch index (index in requested items) repeated for each result object.
-              label['batch_idx'] = torch.tensor([0] * len(result_classes), dtype=torch.float32)
-              assert len(label['cls']) == len(segments)
+            # Apply mosaic augmentation for images selected for object cut.
+            for label, apply_object_mosaic, cut_region, corner_keypoints in zip(
+                    result, apply_object_mosaics, cut_regions, corner_points
+            ):
+                if apply_object_mosaic != nx.dataset.mosaic_utils.ObjectMosaicMode.NONE:
+                    # revert padding
+                    _, height, width = label['img'].shape
+                    x_left = min(c[0] for c in corner_keypoints)
+                    x_right = max(c[0] for c in corner_keypoints)
+                    y_top = min(c[1] for c in corner_keypoints)
+                    y_bottom = max(c[1] for c in corner_keypoints)
+                    x_left_int = int(x_left * width)
+                    x_right_int = int(x_right * width)
+                    y_top_int = int(y_top * height)
+                    y_bottom_int = int(y_bottom * height)
+                    segments = label['loaded_segments']
+                    for s in segments:
+                        if s.bbox is not None:
+                            s.bbox[0] = (s.bbox[0] - x_left) / (x_right - x_left)
+                            s.bbox[1] = (s.bbox[1] - y_top) / (y_bottom - y_top)
+                            s.bbox[2] = (s.bbox[2] - x_left) / (x_right - x_left)
+                            s.bbox[3] = (s.bbox[3] - y_top) / (y_bottom - y_top)
+                        else:
+                            s.polygon = [
+                                ((p[0] - x_left) / (x_right - x_left), (p[1] - y_top) / (y_bottom - y_top))
+                                for p in s.polygon
+                            ]
+                    label['img'] = label['img'][:, y_top_int:y_bottom_int, x_left_int:x_right_int]
+                    label['img'], label['loaded_segments'] = nx.dataset.mosaic_utils.cut_and_paste_object_as_mosaic(
+                        label['img'],
+                        [(0, 0, 1, 1)],
+                        segments,
+                        result_width=640,
+                        result_height=640,
+                        mode=apply_object_mosaic
+                    )
 
-          result_mem_usage = 0
-          for label in result:
-              img = label['img']
-              result_mem_usage += img.element_size() * img.nelement()
-          self._trace("_get_items_by_labels: step 10, gpu usage = " + str(result_mem_usage))
+            self._trace("_get_items_by_labels: step 8")
+            # Apply mixup augmentation (with using kornia)
+            mixup3_probability = self._augment_args.get('mixup3', 0)
+            mixup2_probability = self._augment_args.get('mixup2', 0)
+            if len(result) > 1:
+                for label_i, label in enumerate(result):
+                    if random.uniform(0, 1) < mixup3_probability:
+                        label_for_mix1 = DaliKorniaDataset.select_random_label(result, label_i)
+                        label_for_mix2 = DaliKorniaDataset.select_random_label(result, label_i)
+                        delta_coef = 0.02
+                        mix_coef1 = random.uniform(0.33 - delta_coef, 0.33 + delta_coef)
+                        mix_coef2 = random.uniform(0.33 - delta_coef, 0.33 + delta_coef)
+                        label['img'] = (
+                            label['img'].to(torch.float32) * mix_coef1 +
+                            label_for_mix1['img'].to(torch.float32) * mix_coef2 +
+                            label_for_mix2['img'].to(torch.float32) * (1 - mix_coef1 - mix_coef2)
+                        ).to(torch.uint8)
+                        label['loaded_segments'] = (
+                            label['loaded_segments'] +
+                            label_for_mix1['loaded_segments'] +
+                            label_for_mix2['loaded_segments']
+                        )
+                    elif random.uniform(0, 1) < mixup2_probability:
+                        label_for_mix = DaliKorniaDataset.select_random_label(result, label_i)
+                        mix_coef = random.uniform(0.33, 0.66)
+                        label['img'] = (
+                            label['img'].to(torch.float32) * mix_coef +
+                            label_for_mix['img'].to(torch.float32) * (1 - mix_coef)
+                        ).to(torch.uint8)
+                        label['loaded_segments'] = (label['loaded_segments'] + label_for_mix['loaded_segments'])
 
-          return result
+            # Fill bboxes and cls by result segments.
+            for label in result:
+                resized_shape = label['resized_shape']  # < HW
+                h, w = resized_shape
+                segments = copy.deepcopy(label['loaded_segments'])
+                result_classes, result_bboxes, segments = nx.dataset.utils.segments_to_bboxes(
+                    segments,
+                    image_width=w,
+                    image_height=h,
+                )
+                assert len(result_classes) == len(segments)
+                label['cls'] = torch.tensor(result_classes)
+                label['bboxes'] = torch.tensor(result_bboxes)
+                # batch_idx should be batch index (index in requested items) repeated for each result object.
+                label['batch_idx'] = torch.tensor([0] * len(result_classes), dtype=torch.float32)
+                assert len(label['cls']) == len(segments)
+
+            result_mem_usage = 0
+            for label in result:
+                img = label['img']
+                result_mem_usage += img.element_size() * img.nelement()
+            self._trace("_get_items_by_labels: step 10, gpu usage = " + str(result_mem_usage))
+
+            # Move img back to RAM for decrease GPU memory usage until images are
+            # taken out of the pool.
+            cpu_device = torch.device('cpu')
+            for label in result:
+                label['img'] = label['img'].to(cpu_device)
+
+            return result
+
+        except Exception as e:
+            logger.error("Can't process files {" + ",".join(files) + "}: " + str(e))
+            return []
 
         finally:
-          gc.disable()
-          gc.collect()  # Run garbage collection manually for minimize maximum gpu memory usage at point of time.
-          gc.enable()
+            torch.cuda.empty_cache()
+            #gc.disable()
+            gc.collect()  # Run garbage collection manually for minimize maximum gpu memory usage at point of time.
+            #gc.enable()
 
     @staticmethod
     def select_random_label(labels, exclude_index):
